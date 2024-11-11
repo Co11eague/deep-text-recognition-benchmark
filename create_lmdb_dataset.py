@@ -24,7 +24,6 @@ def writeCache(env, cache):
         for k, v in cache.items():
             txn.put(k, v)
 
-
 def createDataset(inputPath, gtFile, outputPath, checkValid=True):
     """
     Create LMDB dataset for training and evaluation.
@@ -35,52 +34,59 @@ def createDataset(inputPath, gtFile, outputPath, checkValid=True):
         checkValid : if true, check the validity of every image
     """
     os.makedirs(outputPath, exist_ok=True)
-    env = lmdb.open(outputPath, map_size=1099511627776)
+    env = lmdb.open(outputPath, map_size=1 * 1024 * 1024 * 1024)
     cache = {}
     cnt = 1
 
-    with open(gtFile, 'r', encoding='utf-8') as data:
+    with open(gtFile, 'r') as data:
         datalist = data.readlines()
 
-    nSamples = len(datalist)
-    for i in range(nSamples):
-        imagePath, label = datalist[i].strip('\n').split('\t')
-        imagePath = os.path.join(inputPath, imagePath)
+    nSamples = len(datalist) // 2
+    for i in range(0, len(datalist), 2):
+        imagePathLine = datalist[i].strip().replace("Filename: ", "")
+        labelLine = datalist[i + 1].strip()
 
         # # only use alphanumeric data
         # if re.search('[^a-zA-Z0-9]', label):
         #     continue
 
+        imagePath = os.path.join(inputPath, imagePathLine)
+        label = labelLine
+
         if not os.path.exists(imagePath):
-            print('%s does not exist' % imagePath)
+            print(f'{imagePath} does not exist')
             continue
+
         with open(imagePath, 'rb') as f:
             imageBin = f.read()
+
         if checkValid:
             try:
                 if not checkImageIsValid(imageBin):
-                    print('%s is not a valid image' % imagePath)
+                    print(f'{imagePath} is not a valid image')
                     continue
-            except:
-                print('error occured', i)
+            except Exception as e:
+                print(f'Error occurred with {i//2}th image: {e}')
                 with open(outputPath + '/error_image_log.txt', 'a') as log:
-                    log.write('%s-th image data occured error\n' % str(i))
+                    log.write(f'{i//2}-th image data occurred error\n')
                 continue
 
-        imageKey = 'image-%09d'.encode() % cnt
-        labelKey = 'label-%09d'.encode() % cnt
-        cache[imageKey] = imageBin
-        cache[labelKey] = label.encode()
+            imageKey = f'image-{cnt:09d}'.encode()
+            labelKey = f'label-{cnt:09d}'.encode()
+            cache[imageKey] = imageBin
+            cache[labelKey] = label.encode('utf-8')
 
-        if cnt % 1000 == 0:
-            writeCache(env, cache)
-            cache = {}
-            print('Written %d / %d' % (cnt, nSamples))
-        cnt += 1
-    nSamples = cnt-1
+            if cnt % 1000 == 0:
+                writeCache(env, cache)
+                cache = {}
+                print(f'Written {cnt} / {nSamples}')
+
+            cnt += 1
+
+    nSamples = cnt - 1
     cache['num-samples'.encode()] = str(nSamples).encode()
     writeCache(env, cache)
-    print('Created dataset with %d samples' % nSamples)
+    print(f'Created dataset with {nSamples} samples')
 
 
 if __name__ == '__main__':
