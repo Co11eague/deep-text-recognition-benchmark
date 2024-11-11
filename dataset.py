@@ -1,6 +1,8 @@
 import os
 import sys
 import re
+from typing import List
+
 import six
 import math
 import lmdb
@@ -10,8 +12,9 @@ from natsort import natsorted
 from PIL import Image
 import numpy as np
 from torch.utils.data import Dataset, ConcatDataset, Subset
-from torch._utils import _accumulate
 import torchvision.transforms as transforms
+from pathlib import Path
+
 
 
 class Batch_Balanced_Dataset(object):
@@ -49,10 +52,15 @@ class Batch_Balanced_Dataset(object):
             See 4.2 section in our paper.
             """
             number_dataset = int(total_number_dataset * float(opt.total_data_usage_ratio))
-            dataset_split = [number_dataset, total_number_dataset - number_dataset]
             indices = range(total_number_dataset)
-            _dataset, _ = [Subset(_dataset, indices[offset - length:offset])
-                           for offset, length in zip(_accumulate(dataset_split), dataset_split)]
+
+            dataset_split: List[int] = [number_dataset, total_number_dataset - number_dataset]
+            cumulative_offsets = torch.cumsum(torch.tensor(dataset_split), dim=0)
+
+            _dataset, _ = [
+                Subset(_dataset, indices[offset - length:offset])
+                for offset, length in zip(cumulative_offsets, dataset_split)
+            ]
             selected_d_log = f'num total samples of {selected_d}: {total_number_dataset} x {opt.total_data_usage_ratio} (total_data_usage_ratio) = {len(_dataset)}\n'
             selected_d_log += f'num samples of {selected_d} per batch: {opt.batch_size} x {float(batch_ratio_d)} (batch_ratio) = {_batch_size}'
             print(selected_d_log)
@@ -100,7 +108,7 @@ class Batch_Balanced_Dataset(object):
         return balanced_batch_images, balanced_batch_texts
 
 
-def hierarchical_dataset(root, opt, select_data='/'):
+def hierarchical_dataset(root, opt, select_data=['/']):
     """ select_data='/' contains all sub-directory of root directory """
     dataset_list = []
     dataset_log = f'dataset_root:    {root}\t dataset: {select_data[0]}'
