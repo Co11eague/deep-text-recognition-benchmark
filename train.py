@@ -11,15 +11,19 @@ import torch.nn.init as init
 import torch.optim as optim
 import torch.utils.data
 import numpy as np
-
+import torch.multiprocessing as mp
 from utils import CTCLabelConverter, CTCLabelConverterForBaiduWarpctc, AttnLabelConverter, Averager
 from dataset import hierarchical_dataset, AlignCollate, Batch_Balanced_Dataset
 from model import Model
 from test import validation
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+from tqdm import tqdm
+
+
 
 
 def train(opt):
+
     """ dataset preparation """
     if not opt.data_filtering_off:
         print('Filtering the images containing characters which are not in opt.character')
@@ -34,7 +38,7 @@ def train(opt):
     AlignCollate_valid = AlignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio_with_pad=opt.PAD)
     valid_dataset, valid_dataset_log = hierarchical_dataset(root=opt.valid_data, opt=opt)
     valid_loader = torch.utils.data.DataLoader(
-        valid_dataset, batch_size=opt.batch_size,
+        valid_dataset, batch_size=16,
         shuffle=True,  # 'True' to check training progress with validation function.
         num_workers=int(opt.workers),
         collate_fn=AlignCollate_valid, pin_memory=True)
@@ -75,9 +79,11 @@ def train(opt):
                 param.data.fill_(1)
             continue
 
-    # data parallel for multi-GPU
-    model = torch.nn.DataParallel(model).to(device)
+    model = model.to(device)
     model.train()
+    print(torch.cuda.is_available())
+    print(next(model.parameters()).device)
+
     if opt.saved_model != '':
         print(f'loading pretrained model from {opt.saved_model}')
         if opt.FT:
@@ -142,7 +148,14 @@ def train(opt):
     best_norm_ED = -1
     iteration = start_iter
 
-    while(True):
+    for iteration in tqdm(
+            range(start_iter, opt.num_iter),
+            desc="Training",
+            total=opt.num_iter,  # Remaining iterations
+            initial=start_iter  # Start position
+    ):
+        iteration_start_time = time.time()  # Track iteration start time
+
         # train part
         image_tensors, labels = train_dataset.get_batch()
         image = image_tensors.to(device)
@@ -160,26 +173,46 @@ def train(opt):
                 cost = criterion(preds, text, preds_size, length)
 
         else:
+            print("Before training")
             preds = model(image, text[:, :-1])  # align with Attention.forward
             target = text[:, 1:]  # without [GO] Symbol
             cost = criterion(preds.view(-1, preds.shape[-1]), target.contiguous().view(-1))
+            print("After training")
 
+        print("Zero grad")
         model.zero_grad()
+        print("End zero grad")
         cost.backward()
+        print("End backward")
         torch.nn.utils.clip_grad_norm_(model.parameters(), opt.grad_clip)  # gradient clipping with 5 (Default)
+        print("End clip grad")
         optimizer.step()
+        print("End optimizer step")
 
         loss_avg.add(cost)
+        print("End loss avg")
+
+        if (iteration + 1) % 500 == 0:  # Log every 500 iterations
+            elapsed_time = time.time() - iteration_start_time
+            print(f"Iteration: {iteration + 1}/{opt.num_iter}, Batch Loss: {cost.item():.4f}, "
+                  f"Time Taken: {elapsed_time:.2f}s, ETA to next validation: "
+                  f"{(opt.valInterval - (iteration + 1) % opt.valInterval) * elapsed_time:.2f}s")
 
         # validation part
         if (iteration + 1) % opt.valInterval == 0 or iteration == 0: # To see training progress, we also conduct validation when 'iteration == 0' 
             elapsed_time = time.time() - start_time
+            print(f"Validation Start Time: {start_time}")
+
+            # Log validation details
+
             # for log
             with open(f'./saved_models/{opt.exp_name}/log_train.txt', 'a') as log:
                 model.eval()
                 with torch.no_grad():
                     valid_loss, current_accuracy, current_norm_ED, preds, confidence_score, labels, infer_time, length_of_data = validation(
                         model, criterion, valid_loader, converter, opt)
+                    print(f"Validation at iteration {iteration + 1}, Valid loss: {valid_loss:.4f}, "
+                          f"Accuracy: {current_accuracy:.2f}%, Normalized ED: {current_norm_ED:.2f}")
                 model.train()
 
                 # training loss and validation loss
@@ -216,7 +249,7 @@ def train(opt):
                 log.write(predicted_result_log + '\n')
 
         # save model per 1e+5 iter.
-        if (iteration + 1) % 1e+5 == 0:
+        if (iteration + 1) % 100 == 0:
             torch.save(
                 model.state_dict(), f'./saved_models/{opt.exp_name}/iter_{iteration+1}.pth')
 
@@ -227,6 +260,7 @@ def train(opt):
 
 
 if __name__ == '__main__':
+
     parser = argparse.ArgumentParser()
     parser.add_argument('--exp_name', help='Where to store logs and models')
     parser.add_argument('--train_data', required=True, help='path to training dataset')
@@ -256,8 +290,8 @@ if __name__ == '__main__':
     parser.add_argument('--imgH', type=int, default=32, help='the height of the input image')
     parser.add_argument('--imgW', type=int, default=100, help='the width of the input image')
     parser.add_argument('--rgb', action='store_true', help='use rgb input')
-    parser.add_argument('--character', type=str,
-                        default='0123456789abcdefghijklmnopqrstuvwxyz', help='character label')
+    parser.add_argument('--character', type=str, default='0123456789abcdefghijklmnopqrstuvwxyz -:|()',
+                        help='character label')
     parser.add_argument('--sensitive', action='store_true', help='for sensitive character mode')
     parser.add_argument('--PAD', action='store_true', help='whether to keep ratio then pad for image resize')
     parser.add_argument('--data_filtering_off', action='store_true', help='for data_filtering_off mode')
