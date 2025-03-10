@@ -95,7 +95,7 @@ def validation(model, criterion, evaluation_loader, converter, opt):
     with torch.no_grad():
         for i, (image_tensors, labels) in tqdm(enumerate(evaluation_loader), total=len(evaluation_loader),
                                                desc="Validating"):
-            batch_size = 16
+            batch_size = 50
             length_of_data += batch_size
             image = image_tensors.to(device)
 

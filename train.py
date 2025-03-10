@@ -38,7 +38,7 @@ def train(opt):
     AlignCollate_valid = AlignCollate(imgH=opt.imgH, imgW=opt.imgW, keep_ratio_with_pad=opt.PAD)
     valid_dataset, valid_dataset_log = hierarchical_dataset(root=opt.valid_data, opt=opt)
     valid_loader = torch.utils.data.DataLoader(
-        valid_dataset, batch_size=16,
+        valid_dataset, batch_size=50,
         shuffle=True,  # 'True' to check training progress with validation function.
         num_workers=int(opt.workers),
         collate_fn=AlignCollate_valid, pin_memory=True)
